@@ -1,0 +1,255 @@
+#!/usr/bin/env ruby
+
+#
+# Converts any video file to QuickTime/iTunes compatible M4V format.
+#
+
+require 'json'
+require 'optparse'
+require 'ruby-progressbar'
+
+#
+# Command line parser
+#
+class Options
+  #
+  # Default options
+  #
+  @@options = {
+    # Whether to convert to 480p.
+    :P480  => false,
+
+    # Whether to dump the conversion command and exit.
+    :dump  => false,
+
+    # Files to convert.
+    :files => []
+  }
+
+  def self.options
+    @@options
+  end
+
+  def self.parse
+
+    #
+    # Parser definition
+    #
+    parser = OptionParser.new do |opts|
+      opts.banner = "Usage: convert2qt [options] files..."
+      opts.on("-4", "--480", "Convert video to Standard Definition (480p)") do |sd|
+        @@options[:P480] = sd
+      end
+      opts.on("-d", "--dump", "Dump ffmpeg command and exit") do |d|
+        @@options[:dump] = d
+      end
+      opts.on_tail("-v", "--version", "Show version") do
+        puts opts.ver()
+        exit
+      end
+      opts.on_tail("-h", "--help", "Show this message") do
+        puts opts
+        exit
+      end
+    end
+    parser.version = "0.1"
+    parser.parse!(ARGV)
+    @@options[:files] = ARGV
+  end
+end
+
+#
+# Executes a command in a subshell and returns whatever the command sent to
+# STDOUT. The method returns an array that contains each line received from
+# the child shell.
+#
+def execute(command_array, with_stderr = false)
+  command_array << "2>/dev/null" unless with_stderr
+  command_array << "2>&1" if with_stderr
+  command = command_array.join(" ")
+
+  output = []
+  IO::popen command do |f|
+    line = ""
+    f.each_char do |c|
+      if "\n" == c || "\r" == c
+        output << line
+        yield line if block_given?
+        line = ""
+      else
+        line << c
+      end
+    end
+    output << line
+  end
+  output
+end
+
+#
+# Uses ffprobe to determine what is in the file.
+# TODO: check the language of the various tracks to pick english if available.
+#       with stream["tags"]["language"] == "eng"
+#
+def analyze(file)
+  command = [ "ffprobe", "-print_format json", "-show_format", "-show_streams", "\"#{file}\"" ]
+  json = JSON.parse execute(command).join
+
+  info = {}
+  info[:filename] = json["format"]["filename"]
+  info[:duration] = json["format"]["duration"].to_i
+  info[:video] = {}
+  info[:audio] = {}
+  #info[:subtitle] = {}
+  json["streams"].each do |stream|
+    if("video" == stream["codec_type"] && info[:video].empty?)
+      info[:video] = {
+        :codec => stream["codec_name"],
+        :index => stream["index"]
+      }
+    end
+    if("audio" == stream["codec_type"] && info[:audio].empty?)
+      info[:audio] = {
+        :channels => stream["channels"],
+        :codec    => stream["codec_name"],
+        :index    => stream["index"]
+      }
+    end
+    #if("subtitle" == stream["codec_type"] && info[:subtitle].empty?)
+    #  info[:subtitle] = {
+    #    :index => stream["index"]
+    #  }
+    #end
+  end
+  info
+end
+
+#
+# Uses ffmpeg to convert the file to M4V format.
+#
+def convert(file_info)
+  input_name = file_info[:filename]
+  output_name = File.basename input_name, File.extname(input_name)
+  output_suffix = "m4v"
+  command = [ "ffmpeg", "-y", "-i \"#{input_name}\"", "-map_chapters -1" ]
+
+  if file_info[:video].empty? && !file_info[:audio].empty?
+    #
+    # Audio-only files are converted to either ALAC if the source was FLAC, or
+    # AAC for all other formats.
+    #
+    case file_info[:audio][:codec]
+    when "alac"
+      command << "-codec:a copy"
+    when "flac"
+      command << "-codec:a alac"
+    else
+      command << "-codec:a libfaac" << "-ab:a 256k"
+    end
+    output_suffix = "m4a"
+  elsif !file_info[:video].empty? && !file_info[:audio].empty?
+    # The number of channel maps and languages depends on the number of audio
+    # channels, so the information is collected here and inserted into the
+    # command later.
+    maps  = [ "-map 0:v:0" ]
+    langs = [ "-metadata:s:0 language=eng" ]
+
+    #
+    # The video track is copied if it's in h264 format and the frame size is
+    # to remain the same. Otherwise it's converted to h264 using high-quality
+    # settings.
+    #
+    if "h264" == file_info[:video][:codec] && !Options.options[:P480]
+      command << "-codec:v copy"
+    else
+      # This converts the video using settings suitable for a BluRay disc.
+      command << "-codec:v libx264" << "-preset:v slow" << "-profile:v main" << "-crf:v 18" << "-threads:v 0"
+
+      # Converts HD video to wide-screen 480P if necessary.
+      command << "-vf:v scale=854:-1" if Options.options[:P480]
+    end
+
+    if 2 >= file_info[:audio][:channels]
+      # Only one audio map is needed
+      maps  << "-map 0:a:0"
+      langs << "-metadata:s:1 language=eng"
+
+      #
+      # Stereo audio is copied if it's already AAC or converted.
+      #
+      command << "-codec:a:0"
+      if 'aac' == file_info[:audio][:codec]
+        command << "copy"
+      else
+        command << "libfaac" << "-ab:a:0 160k"
+      end
+    else
+      # Two audio maps are needed.
+      maps  << "-map 0:a:0" << "-map 0:a:0"
+      langs << "-metadata:s:1 language=eng" << "-metadata:s:2 language=eng"
+
+      #
+      # Multi-track audio is first converted to a stereo AAC track to keep
+      # older Apple devices happy, then a six-channel AC3 track is added after
+      # it that contains the multi-track audio.
+      #
+      command << "-codec:a:0 libfaac" << "-ar:a:0 48k" << "-ab:a:0 160k" << "-ac:a:0 2"
+
+      # DCA (DTS) is usually too quiet when converted to AAC.
+      command << "-af:a:0 volume=2.0" if 'dca' == file_info[:audio][:codec]
+
+      if 'ac3' == file_info[:audio][:codec]
+        command << "-codec:a:1 copy"
+      else
+        command << "-codec:a:1 ac3" << "-ar:a:1 48k" << "-ab:a:1 448k" << "-ac:a:1 6"
+      end
+
+      #
+      # If a subtitle was found in the source, include it.
+      # TODO: The stream number in the metadata argument may be wrong.
+      #
+      #unless file_info[:subtitle].empty?
+      #  maps << "-map 0:s:0"
+      #  langs << "-metadata:s:3 language=eng"
+      #  command << "-codec:s:0 mov_text"
+      #end
+    end
+
+    # Now insert the maps into the command
+    command.insert 4, maps.concat(langs)
+  end
+
+  command << "\"#{output_name}.#{output_suffix}\""
+
+  if Options.options[:dump]
+    puts command.join(' ')
+    exit
+  end
+
+  #
+  # Starts the transcoding process.
+  #
+  puts file_info[:filename]
+  progress = ProgressBar.create(:format => "%t |%B| %e",
+                                :total  => file_info[:duration] + 1,
+                                :title  => "Encoding Progress")
+  execute(command, true) do |line|
+    begin
+      line.match /time=(\d\d):(\d\d):(\d\d)/ do |match|
+        if match.length == 4
+          time = match[1].to_i * 3600 + match[2].to_i * 60 + match[3].to_i
+          progress.progress = time
+        end
+      end
+    rescue
+      # Some UTF-8 characters can cause match to throw, but these characters are not used by this script.
+    end
+  end
+  progress.finish
+end
+
+Options.parse
+Options.options[:files].each do |file|
+  file_info = analyze file
+  convert file_info
+end
+

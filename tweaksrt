@@ -1,0 +1,188 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+
+# Command line argument parser
+class Options
+  class << self
+    # Parses the command line and returns the options that were found.
+    def parse(args)
+      # Default options.
+      options = OpenStruct.new
+      options.input_file = ''
+      options.offset = 0
+      options.output_file = ''
+      options.verbose = false
+
+      # Creates the parser.
+      op = OptionParser.new do |opts|
+        opts.banner = "Usage: #{opts.program_name} [options]"
+        opts.on('-i', '--input [FILE]', 'Path of the SRT file to process') do |value|
+          options.input_file = value
+        end
+        opts.on('-o', '--offset [OFFSET]', Float, 'Offset, in seconds to add to all timestamps in the SRT.') do |value|
+          options.offset = value;
+        end
+        opts.on('-v', '--[no-]verbose', 'Verbose output') do |value|
+          options.verbose = value;
+        end
+        opts.on_tail('-h', '--help', 'Show this message') do
+          puts opts
+          exit
+        end
+        opts.on_tail('-V', '--version', 'Show version') do
+          puts opts.ver
+          exit
+        end
+      end
+
+      # Sets the version of the utility
+      op.version = '0.1'
+
+      # Parses the command line arguments.
+      op.parse! args
+
+      # Whatever is left is the output file name.
+      options.output_file = args
+
+      return options
+    end
+  end
+end
+
+# SRT timestamp object
+class SrtTimestamp
+  attr_accessor :hours, :minutes, :seconds, :micro
+  # Initializes the object
+  def initialize(string = nil)
+    self.hours = 0.0
+    self.minutes = 0.0
+    self.seconds = 0.0
+    self.micro = 0.0
+    parse string unless string.nil?
+  end
+
+  # Parses from SRT string notation: hh:mm:ss,mic
+  def parse(value)
+    case value
+    when String
+      matches = /(\d\d):(\d\d):(\d\d),(\d\d\d)/.match(value)
+      self.hours = matches[1].to_f
+      self.minutes = matches[2].to_f
+      self.seconds = matches[3].to_f
+      self.micro = matches[4].to_f
+    when Numeric
+      self.micro = value * 1000 - value.to_i * 1000
+      self.seconds = value - ((value / 60).to_i * 60)
+      self.minutes = (value - ((value / 3600).to_i * 3600)) / 60
+      self.hours = (value / 3600).to_i
+    end
+  end
+
+  # Adds an offset to the timestamp. The offset is expressed in seconds as a
+  # floating point value.
+  def offset(offset)
+    if offset > 0
+      self.micro += offset * 1000 - offset.to_i * 1000
+      while self.micro > 1000
+        self.micro -= 1000
+        self.minutes += 1
+      end
+      self.seconds += offset.to_i
+      while self.seconds > 60
+        self.seconds -= 60
+        self.minutes += 1
+      end
+      while self.minutes > 60
+        self.minutes -= 60
+        self.hours += 1
+      end
+    end
+  end
+
+  # Converts the timestamp to seconds as a floating point number.
+  def to_f
+    self.hours * 3600 + self.minutes * 60 + self.seconds + self.micro / 1000
+  end
+
+  # Converts the timestamp to seconds as an integer.
+  def to_i
+    (self.hours * 3600 + self.minutes * 60 + self.seconds).to_i
+  end
+
+  # Converts the timestamp to SRT string notation.
+  def to_s
+    "%02d:%02d:%02d,%03d" % [self.hours, self.minutes, self.seconds, self.micro]
+  end
+end
+
+# Defines a record read from an SRT file. This consists of a timestamp,
+# duration, and one or more lines of text.
+class SrtRecord
+  # Attributes.
+  attr_accessor :number, :start_time, :end_time, :text
+
+  # Initializes the object.
+  def initialize(file = nil)
+    self.number = 0
+    self.start_time = SrtTimestamp.new
+    self.end_time = SrtTimestamp.new
+    self.text = []
+    read(file) unless file.nil?
+  end
+
+  # Populates fields from a file.
+  def read(file)
+    raise TypeError "File handle must be specified." if file.nil?
+    self.number = file.readline.to_i
+    timestamps = file.readline
+    matches = /(.*) --> (.*)/.match(timestamps)
+    self.start_time = SrtTimestamp.new matches[1]
+    self.end_time = SrtTimestamp.new matches[2]
+    line = ''
+    begin
+      line = file.readline.strip
+      self.text << line unless line.empty?
+    end until file.eof? || line.empty?
+    self
+  end
+
+  # Writes the object to a file. Note that SRT processors expect the line
+  # endings to follow the DOS convention of a carriage return followed by
+  # a line feed.
+  def write(file)
+    raise TypeError "File handle must be specified." if file.nil?
+    file.print "#{self.number}\r\n"
+    file.print "#{self.start_time.to_s} --> #{self.end_time.to_s}\r\n"
+    self.text.each { |t| file.print "#{t}\r\n" }
+    file.print "\r\n"
+  end
+end
+
+# Parses the command line.
+opts = Options.parse ARGV
+
+# The SRT file contents
+srt = []
+
+# Opens the input SRT file and reads its contents into memory.
+in_file = File.open opts.input_file, 'r'
+while !in_file.eof?
+  srt << SrtRecord.new(in_file)
+end
+in_file.close
+
+# Adds an offset to all of the timestamps.
+if 0 < opts.offset
+  STDERR.puts "Adding #{options.offset} seconds to all timestamps" if opts.verbose
+  srt.each do |s|
+    s.start_time.offset opts.offset
+    s.end_time.offset opts.offset
+  end
+end
+
+# Opens the output SRT file and writes it.
+out_file = opts.output_file.empty? ? STDOUT : File.open(opts.output_file, 'w')
+srt.each {|s| s.write out_file}
+out_file.close

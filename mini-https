@@ -1,0 +1,140 @@
+#!/usr/bin/env ruby
+
+# Starts a web server on port 8080 using Ruby's built-in WEBrick module that
+# uses the current directory as the document root.
+
+require 'optparse'
+require 'webrick'
+
+#
+# Command line parser.
+#
+class Options
+  def self.parse
+    #
+    # Default options for WEBrick
+    #
+    options = {
+      :caching => false,
+      :port    => 8080,
+      :root    => File.expand_path('.'),
+      :route   => '/',
+    }
+
+    #
+    # Parser definition
+    #
+    parser = OptionParser.new do |opts|
+      opts.banner = "Usage: webrick [options]"
+
+      opts.on("-c", "--[no]-caching", "Whether to allow the client to cache the response; default is false") do |caching|
+        options[:caching] = caching
+      end
+
+      opts.on("-p", "--port [PORT]", "Port the server listens on, default is 8080") do |port|
+        options[:port] = port
+      end
+
+      opts.on("-r", "--root [DIRECTORY]", "Directory to server from, default is '.'") do |dir|
+        options[:root] = File.expand_path dir
+      end
+
+      opts.on("-t", "--route [PATH]", "Route to serve from; default is '/'") do |route|
+        options[:route] = route
+      end
+
+      opts.on_tail("-h", "--help", "Show this message") do
+        puts opts
+        exit
+      end
+    end
+
+    #
+    # Parse the command line and return the options.
+    #
+    parser.parse!(ARGV)
+    options
+  end
+end
+
+#
+# The web server
+#
+class Server
+  #
+  # Handler that serves files but prevents them from being cached by the client.
+  #
+  class NonCachingFileHandler < WEBrick::HTTPServlet::FileHandler
+    #
+    # Adds the appropriate headers to prevent the client from caching the response.
+    #
+    def prevent_caching(res)
+      res['ETag']          = nil
+      res['Last-Modified'] = Time.now + 100**4
+      res['Cache-Control'] = 'no-store, no-cache, must-revalidate, post-check=0, pre-check=0'
+      res['Pragma']        = 'no-cache'
+      res['Expires']       = Time.now - 100**4
+    end
+
+    #
+    # Overloads the default GET handler to add the cache headers.
+    #
+    def do_GET(req, res)
+      super(req, res)
+      prevent_caching(res)
+    end
+  end
+
+  #
+  # Sets the options used to start the server
+  #
+  def initialize(options)
+    @options = options
+  end
+
+  #
+  # Starts the server
+  #
+  def start
+    # Creates the server.
+    config = {
+      :Port => @options[:port]
+    }
+    @server = WEBrick::HTTPServer.new config
+
+    # Adds the route.
+    if @options[:caching]
+      @server.mount @options[:route], WEBrick::HTTPServlet::FileHandler, @options[:root]
+    else
+      @server.mount @options[:route], NonCachingFileHandler, @options[:root]
+    end
+
+    # Traps ^C to shut down the server.
+    trap "INT" do
+      self.stop
+    end
+
+    # Outputs the options to the log.
+    @server.logger.info("")
+    @server.logger.info("Starting web server with the following options:")
+    @server.logger.info("")
+    @server.logger.info("Caching       [" + (@options[:caching] ? "ON" : "OFF") + "]")
+    @server.logger.info("Document Root [" + @options[:root] + "]")
+    @server.logger.info("Port          [" + @options[:port].to_s + "]")
+    @server.logger.info("Route         [" + @options[:route] + "]")
+    @server.logger.info("")
+
+    # Starts the server.
+    @server.start
+  end
+
+  #
+  # Shuts down the server
+  #
+  def stop
+    @server.shutdown
+  end
+end
+
+server = Server.new(Options.parse)
+server.start
