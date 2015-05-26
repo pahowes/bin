@@ -143,7 +143,7 @@ def convert(file_info)
     when "flac"
       command << "-codec:a alac"
     else
-      command << "-codec:a libfaac" << "-ab:a 256k"
+      command << "-codec:a libfaac" << "-ar:a:0 48k" << "-ab:a 256k"
     end
     output_suffix = "m4a"
   elsif !file_info[:video].empty? && !file_info[:audio].empty?
