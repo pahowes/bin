@@ -1,0 +1,14 @@
+#!/usr/bin/env /bin/sh
+AGENT=com.apple.Dock.agent
+PLIST=/System/Library/LaunchAgents/com.apple.Dock.plist
+
+# First make sure everything has been shut down.
+launchctl stop ${AGENT}
+launchctl unload ${PLIST}
+
+# Pause briefly so everything can shut down.
+sleep 2
+
+# Restart the Dock.
+launchctl load ${PLIST}
+launchctl start ${AGENT}
