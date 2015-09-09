@@ -133,7 +133,7 @@ def convert(file_info)
   output_suffix = "m4v"
   command = [ "ffmpeg", "-y", "-i \"#{input_name}\"", "-map_chapters -1" ]
 
-  if (file_info[:video].empty? && !file_info[:audio].empty?) || input_suffix == '.flac'
+  if (file_info[:video].empty? && !file_info[:audio].empty?) || input_suffix == '.flac' || input_suffix == '.mp3'
     #
     # Audio-only files are converted to either ALAC if the source was FLAC, or
     # AAC for all other formats.
