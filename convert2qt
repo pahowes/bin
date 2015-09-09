@@ -128,22 +128,23 @@ end
 #
 def convert(file_info)
   input_name = file_info[:filename]
-  output_name = File.basename input_name, File.extname(input_name)
+  input_suffix = File.extname input_name
+  output_name = File.basename input_name, input_suffix
   output_suffix = "m4v"
   command = [ "ffmpeg", "-y", "-i \"#{input_name}\"", "-map_chapters -1" ]
 
-  if file_info[:video].empty? && !file_info[:audio].empty?
+  if (file_info[:video].empty? && !file_info[:audio].empty?) || input_suffix == '.flac'
     #
     # Audio-only files are converted to either ALAC if the source was FLAC, or
     # AAC for all other formats.
     #
     case file_info[:audio][:codec]
     when "alac"
-      command << "-codec:a copy"
+      command << "-map 0:a:0" << "-codec:a copy"
     when "flac"
-      command << "-codec:a alac"
+      command << "-map 0:a:0" << "-codec:a alac"
     else
-      command << "-codec:a libfaac" << "-ar:a:0 48k" << "-ab:a 256k"
+      command << "-map 0:a:0" << "-codec:a libfaac" << "-ar:a:0 48k" << "-ab:a 256k"
     end
     output_suffix = "m4a"
   elsif !file_info[:video].empty? && !file_info[:audio].empty?
