@@ -17,10 +17,13 @@ class Options
   #
   @@options = {
     # Whether to convert to 480p.
-    :P480  => false,
+    :P480 => false,
 
     # Whether to dump the conversion command and exit.
-    :dump  => false,
+    :dump => false,
+
+    # Whether to include subtitles from the source file.
+    :subs => false,
 
     # Files to convert.
     :files => []
@@ -43,6 +46,9 @@ class Options
       opts.on("-d", "--dump", "Dump ffmpeg command and exit") do |d|
         @@options[:dump] = d
       end
+      opts.on("-s", "--subtitles", "Convert subtitles from the source file") do |s|
+        @@options[:subs] = s
+      end
       opts.on_tail("-v", "--version", "Show version") do
         puts opts.ver()
         exit
@@ -52,7 +58,7 @@ class Options
         exit
       end
     end
-    parser.version = "0.1"
+    parser.version = "0.2"
     parser.parse!(ARGV)
     @@options[:files] = ARGV
   end
@@ -86,41 +92,100 @@ def execute(command_array, with_stderr = false)
 end
 
 #
-# Uses ffprobe to determine what is in the file.
-# TODO: check the language of the various tracks to pick english if available.
-#       with stream["tags"]["language"] == "eng"
+# Uses ffprobe to collect information about the file.
 #
-def analyze(file)
+def probe(file)
   command = [ "ffprobe", "-print_format json", "-show_format", "-show_streams", "\"#{file}\"" ]
   json = JSON.parse execute(command).join
 
   info = {}
   info[:filename] = json["format"]["filename"]
   info[:duration] = json["format"]["duration"].to_i
-  info[:video] = {}
-  info[:audio] = {}
-  #info[:subtitle] = {}
+  info[:video] = []
+  info[:audio] = []
+  info[:subtitle] = []
+
+  # Note that the stream index value is not the index of the stream relative
+  # to the file, it's the index relative to the number of that type of streams.
+  # That is what ffmpeg expects when you specify something like "-map 0:a:0"
+  # which means the first audio stream in the first input file, even if the
+  # stream is the fifth found in the file.
+  #
   json["streams"].each do |stream|
-    if("video" == stream["codec_type"] && info[:video].empty?)
-      info[:video] = {
-        :codec => stream["codec_name"],
-        :index => stream["index"]
+    if("video" == stream["codec_type"])
+      info[:video] << {
+        :index  => info[:video].count,
+        :codec  => stream["codec_name"],
+        :width  => stream["width"],
+        :height => stream["height"]
       }
-    end
-    if("audio" == stream["codec_type"] && info[:audio].empty?)
-      info[:audio] = {
-        :channels => stream["channels"],
+    elsif("audio" == stream["codec_type"])
+      info[:audio] << {
+        :index    => info[:audio].count,
         :codec    => stream["codec_name"],
-        :index    => stream["index"]
+        :channels => stream["channels"],
+        :language => stream["tags"] ?
+                       (stream["tags"]["language"] && stream["tags"]["language"].downcase != 'und') ?
+                         stream["tags"]["language"].downcase :
+                         'eng' :
+                       'eng',
+        :title    => stream["tags"] ? stream["tags"]["title"] ? stream["tags"]["title"] : nil : nil
+      }
+    elsif("subtitle" == stream["codec_type"] && Options.options[:subs])
+      info[:subtitle] << {
+        :index    => info[:subtitle].count,
+        :codec    => stream["codec_name"],
+        :language => stream["tags"] ? stream["tags"]["language"] ? stream["tags"]["language"].downcase : 'eng' : 'eng',
+        :title    => stream["tags"] ? stream["tags"]["title"] ? stream["tags"]["title"] : nil : nil,
+        :forced   => stream["disposition"]["forced"],
+        :impared  => stream["disposition"]["hearing_impaired"]
       }
     end
-    #if("subtitle" == stream["codec_type"] && info[:subtitle].empty?)
-    #  info[:subtitle] = {
-    #    :index => stream["index"]
-    #  }
-    #end
   end
-  info
+
+  return info
+end
+
+#
+# Selects appropriate streams from those found in the file.
+#
+def select_streams(info)
+  if !info[:video].empty?
+    # There can be only one (video stream).
+    info[:video] = info[:video].first
+  end
+
+  unless info[:audio].empty?
+    # Removes foreign langauge audio streams.
+    info[:audio].delete_if { |s| s[:language] != 'eng' }
+
+    # Finds the highest quality audio stream available
+    audio_stream = nil
+    info[:audio].each do |s|
+      # Surround tracks
+      audio_stream ||= s if s[:codec] == 'dca'    # DTS
+      audio_stream ||= s if s[:codec] == 'ac3'    # AC3
+      # Stereo tracks
+      audio_stream ||= s if s[:codec] == 'alac'   # Apple lossless
+      audio_stream ||= s if s[:codec] == 'flac'   # Open-source lossless
+      audio_stream ||= s if s[:codec] == 'aac'    # AAC
+      audio_stream ||= s if s[:codec] == 'mp3'    # MP3
+    end
+
+    # Catch-all, just in case.
+    audio_stream ||= info[:audio].first
+    info[:audio] = audio_stream
+  end
+
+  unless info[:subtitle].empty?
+    # Removes all non-english subtitle streams.
+    info[:subtitle].delete_if { |s| s[:language] != 'eng' }
+
+    # Default to the last subtitle stream (first one is usually forced subs)
+    info[:subtitle] = info[:subtitle].last
+  end
+
+  return info
 end
 
 #
@@ -140,11 +205,11 @@ def convert(file_info)
     #
     case file_info[:audio][:codec]
     when "alac"
-      command << "-map 0:a:0" << "-codec:a copy"
+      command << "-map 0:a:#{file_info[:audio][:index]}" << "-codec:a copy"
     when "flac"
-      command << "-map 0:a:0" << "-codec:a alac"
+      command << "-map 0:a:#{file_info[:audio][:index]}" << "-codec:a alac"
     else
-      command << "-map 0:a:0" << "-codec:a libfaac" << "-ar:a:0 48k" << "-ab:a 256k"
+      command << "-map 0:a:#{file_info[:audio][:index]}" << "-codec:a libfaac" << "-ar:a:0 48k" << "-ab:a 256k"
     end
     output_suffix = "m4a"
   elsif !file_info[:video].empty? && !file_info[:audio].empty?
@@ -171,8 +236,8 @@ def convert(file_info)
 
     if 2 >= file_info[:audio][:channels]
       # Only one audio map is needed
-      maps  << "-map 0:a:0"
-      langs << "-metadata:s:1 language=eng"
+      maps  << "-map 0:a:#{file_info[:audio][:index]}"
+      langs << "-metadata:s:#{langs.count} language=eng"
 
       #
       # Stereo audio is copied if it's already AAC or converted.
@@ -185,8 +250,8 @@ def convert(file_info)
       end
     else
       # Two audio maps are needed.
-      maps  << "-map 0:a:0" << "-map 0:a:0"
-      langs << "-metadata:s:1 language=eng" << "-metadata:s:2 language=eng"
+      maps  << "-map 0:a:#{file_info[:audio][:index]}" << "-map 0:a:#{file_info[:audio][:index]}"
+      langs << "-metadata:s:#{langs.count} language=eng" << "-metadata:s:#{langs.count} language=eng"
 
       #
       # Multi-track audio is first converted to a stereo AAC track to keep
@@ -204,15 +269,12 @@ def convert(file_info)
         command << "-codec:a:1 ac3" << "-ar:a:1 48k" << "-ab:a:1 448k" << "-ac:a:1 6"
       end
 
-      #
-      # If a subtitle was found in the source, include it.
-      # TODO: The stream number in the metadata argument may be wrong.
-      #
-      #unless file_info[:subtitle].empty?
-      #  maps << "-map 0:s:0"
-      #  langs << "-metadata:s:3 language=eng"
-      #  command << "-codec:s:0 mov_text"
-      #end
+    end
+
+    unless file_info[:subtitle].empty?
+      maps << "-map 0:s:#{file_info[:subtitle][:index]}"
+      langs << "-metadata:s:#{langs.count} language=eng"
+      command << "-codec:s:0 mov_text"
     end
 
     # Now insert the maps into the command
@@ -250,7 +312,8 @@ end
 
 Options.parse
 Options.options[:files].each do |file|
-  file_info = analyze file
-  convert file_info
+  file_info = probe file
+  stream_info = select_streams file_info
+  convert stream_info
 end
 
