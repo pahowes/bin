@@ -1,0 +1,27 @@
+#!/usr/bin/env sh
+
+# Invoke this script with the user@host as the first parameter
+if [ $# == 0 ]; then
+  echo "Usage:"
+  echo ""
+  echo "  copy-ssh-key user@host"
+  echo ""
+  echo "  user: The username to connect to the remote system as"
+  echo "  host: Hostname of the remote system"
+  echo ""
+  echo "An RSA key will be generated for the current user if one does not"
+  echo "already exist. The public part of the RSA key is copied to the remote"
+  echo "host's ~/.ssh/authorized_keys file with correct permissions, which"
+  echo "then allows future access without requiring password entry."
+  echo ""
+  exit 1
+fi
+REMOTE_HOST=$1
+
+# Generate the SSH key if it doesn't already exist.
+if [ ! -f ~/.ssh/id_rsa.pub ]; then
+  ssh-keygen -q -t rsa -N ''
+fi
+
+# Copy the key to the remote host.
+cat ~/.ssh/id_rsa.pub | ssh -q -oStrictHostKeyChecking=no ${REMOTE_HOST} "umask 077 && mkdir -p ~/.ssh && cat >> ~/.ssh/authorized_keys"
