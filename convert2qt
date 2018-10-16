@@ -7,6 +7,7 @@
 require 'json'
 require 'optparse'
 require 'ruby-progressbar'
+require 'shellwords'
 
 #
 # Command line parser
@@ -18,6 +19,9 @@ class Options
   @@options = {
     # Whether to convert to 480p.
     :P480 => false,
+
+    # Whether to convert to 720p.
+    :P720 => false,
 
     # Whether to dump the conversion command and exit.
     :dump => false,
@@ -42,6 +46,9 @@ class Options
       opts.banner = "Usage: convert2qt [options] files..."
       opts.on("-4", "--480", "Convert video to Standard Definition (480p)") do |sd|
         @@options[:P480] = sd
+      end
+      opts.on("-7", "--720", "Convert video to 720p HD") do |hd|
+        @@options[:P720] = hd
       end
       opts.on("-d", "--dump", "Dump ffmpeg command and exit") do |d|
         @@options[:dump] = d
@@ -95,9 +102,10 @@ end
 # Uses ffprobe to collect information about the file.
 #
 def probe(file)
-  command = [ "ffprobe", "-print_format json", "-show_format", "-show_streams", "\"#{file}\"" ]
+  file = Shellwords.escape(file)
+  command = [ "ffprobe", "-print_format json", "-show_format", "-show_streams", "#{file}" ]
   json = JSON.parse execute(command).join
-
+  
   info = {}
   info[:filename] = json["format"]["filename"]
   info[:duration] = json["format"]["duration"].to_i
@@ -157,19 +165,22 @@ def select_streams(info)
 
   unless info[:audio].empty?
     # Removes foreign langauge audio streams.
-    info[:audio].delete_if { |s| s[:language] != 'eng' }
+    #info[:audio].delete_if { |s| s[:language] != 'eng' }
 
     # Finds the highest quality audio stream available
     audio_stream = nil
     info[:audio].each do |s|
-      # Surround tracks
-      audio_stream ||= s if s[:codec] == 'dca'    # DTS
-      audio_stream ||= s if s[:codec] == 'ac3'    # AC3
-      # Stereo tracks
-      audio_stream ||= s if s[:codec] == 'alac'   # Apple lossless
-      audio_stream ||= s if s[:codec] == 'flac'   # Open-source lossless
-      audio_stream ||= s if s[:codec] == 'aac'    # AAC
-      audio_stream ||= s if s[:codec] == 'mp3'    # MP3
+      if s[:language] == 'eng'
+        # Surround tracks
+        audio_stream ||= s if s[:codec] == 'dts'    # DTS
+        audio_stream ||= s if s[:codec] == 'dca'    # DTS (older ffmpeg)
+        audio_stream ||= s if s[:codec] == 'ac3'    # AC3
+        # Stereo tracks
+        audio_stream ||= s if s[:codec] == 'alac'   # Apple lossless
+        audio_stream ||= s if s[:codec] == 'flac'   # Open-source lossless
+        audio_stream ||= s if s[:codec] == 'aac'    # AAC
+        audio_stream ||= s if s[:codec] == 'mp3'    # MP3
+      end
     end
 
     # Catch-all, just in case.
@@ -192,11 +203,11 @@ end
 # Uses ffmpeg to convert the file to M4V format.
 #
 def convert(file_info)
-  input_name = file_info[:filename]
+  input_name = Shellwords.escape(file_info[:filename])
   input_suffix = File.extname input_name
   output_name = File.basename input_name, input_suffix
   output_suffix = "m4v"
-  command = [ "ffmpeg", "-y", "-i \"#{input_name}\"", "-map_chapters -1" ]
+  command = [ "ffmpeg", "-y", "-i #{input_name}", "-map_chapters -1" ]
 
   if (file_info[:video].empty? && !file_info[:audio].empty?) || input_suffix == '.flac' || input_suffix == '.mp3'
     #
@@ -209,7 +220,7 @@ def convert(file_info)
     when "flac"
       command << "-map 0:a:#{file_info[:audio][:index]}" << "-codec:a alac"
     else
-      command << "-map 0:a:#{file_info[:audio][:index]}" << "-codec:a libfaac" << "-ar:a:0 48k" << "-ab:a 256k"
+      command << "-map 0:a:#{file_info[:audio][:index]}" << "-codec:a aac" << "-ar:a:0 48k" << "-ab:a 256k"
     end
     output_suffix = "m4a"
   elsif !file_info[:video].empty? && !file_info[:audio].empty?
@@ -220,15 +231,22 @@ def convert(file_info)
     langs = [ "-metadata:s:0 language=eng" ]
 
     #
-    # The video track is copied if it's in h264 format and the frame size is
-    # to remain the same. Otherwise it's converted to h264 using high-quality
+    # The video track is copied if the codec is h265 (hevc) and a video tag
+    # is added so that Apple products understand the format. Otherwise, the
+    # video track is copied if it's in h264 format and the frame size is
+    # to remain the same, or it's converted to h264 using high-quality
     # settings.
     #
-    if "h264" == file_info[:video][:codec] && !Options.options[:P480]
+    if "hevc" == file_info[:video][:codec]
+      command << "-codec:v copy -vtag hvc1"
+    elsif "h264" == file_info[:video][:codec] && !Options.options[:P480] && !Options.options[:P720]
       command << "-codec:v copy"
     else
       # This converts the video using settings suitable for a BluRay disc.
       command << "-codec:v libx264" << "-preset:v slow" << "-profile:v main" << "-crf:v 18" << "-threads:v 0"
+
+      # Converts HD video to wide-screen 720P if necessary.
+      command << "-vf:v scale=1280:-1" if Options.options[:P720]
 
       # Converts HD video to wide-screen 480P if necessary.
       command << "-vf:v scale=854:-1" if Options.options[:P480]
@@ -246,7 +264,7 @@ def convert(file_info)
       if 'aac' == file_info[:audio][:codec]
         command << "copy"
       else
-        command << "libfaac" << "-ab:a:0 160k"
+        command << "aac" << "-ab:a:0 160k"
       end
     else
       # Two audio maps are needed.
@@ -258,7 +276,7 @@ def convert(file_info)
       # older Apple devices happy, then a six-channel AC3 track is added after
       # it that contains the multi-track audio.
       #
-      command << "-codec:a:0 libfaac" << "-ar:a:0 48k" << "-ab:a:0 160k" << "-ac:a:0 2"
+      command << "-codec:a:0 aac" << "-ar:a:0 48k" << "-ab:a:0 160k" << "-ac:a:0 2"
 
       # DCA (DTS) is usually too quiet when converted to AAC.
       command << "-af:a:0 volume=2.0" if 'dca' == file_info[:audio][:codec]
@@ -271,7 +289,7 @@ def convert(file_info)
 
     end
 
-    unless file_info[:subtitle].empty?
+    unless file_info.key?(:subtitle) || file_info[:subtitle].empty?
       maps << "-map 0:s:#{file_info[:subtitle][:index]}"
       langs << "-metadata:s:#{langs.count} language=eng"
       command << "-codec:s:0 mov_text"
@@ -281,7 +299,7 @@ def convert(file_info)
     command.insert 4, maps.concat(langs)
   end
 
-  command << "\"#{output_name}.#{output_suffix}\""
+  command << "#{output_name}.#{output_suffix}"
 
   if Options.options[:dump]
     puts command.join(' ')
