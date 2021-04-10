@@ -1,7 +1,7 @@
 #!/usr/bin/env ruby
 
 #
-# Converts any video file to QuickTime/iTunes compatible M4V format.
+# Converts any video file to QuickTime/iTunes compatible MP4 format.
 #
 
 require 'json'
@@ -25,6 +25,9 @@ class Options
 
     # Whether to dump the conversion command and exit.
     :dump => false,
+
+    # Whether to dump the output from ffprobe and exit.
+    :info => false,
 
     # Whether to include subtitles from the source file.
     :subs => false,
@@ -53,6 +56,9 @@ class Options
       opts.on("-d", "--dump", "Dump ffmpeg command and exit") do |d|
         @@options[:dump] = d
       end
+      opts.on("-i", "--info", "Dump ffprobe output and exit") do |i|
+        @@options[:info] = i
+      end
       opts.on("-s", "--subtitles", "Convert subtitles from the source file") do |s|
         @@options[:subs] = s
       end
@@ -65,7 +71,7 @@ class Options
         exit
       end
     end
-    parser.version = "0.2"
+    parser.version = "0.3"
     parser.parse!(ARGV)
     @@options[:files] = ARGV
   end
@@ -104,8 +110,14 @@ end
 def probe(file)
   file = Shellwords.escape(file)
   command = [ "ffprobe", "-print_format json", "-show_format", "-show_streams", "#{file}" ]
+
   json = JSON.parse execute(command).join
-  
+
+  if Options.options[:info]
+    pp json
+    exit
+  end
+
   info = {}
   info[:filename] = json["format"]["filename"]
   info[:duration] = json["format"]["duration"].to_i
@@ -164,9 +176,6 @@ def select_streams(info)
   end
 
   unless info[:audio].empty?
-    # Removes foreign langauge audio streams.
-    #info[:audio].delete_if { |s| s[:language] != 'eng' }
-
     # Finds the highest quality audio stream available
     audio_stream = nil
     info[:audio].each do |s|
@@ -174,7 +183,8 @@ def select_streams(info)
         # Surround tracks
         audio_stream ||= s if s[:codec] == 'dts'    # DTS
         audio_stream ||= s if s[:codec] == 'dca'    # DTS (older ffmpeg)
-        audio_stream ||= s if s[:codec] == 'ac3'    # AC3
+        audio_stream ||= s if s[:codec] == 'ac3'    # Dolby Digital
+        audio_stream ||= s if s[:codec] == 'eac3'   # Dolby Digital Plus
         # Stereo tracks
         audio_stream ||= s if s[:codec] == 'alac'   # Apple lossless
         audio_stream ||= s if s[:codec] == 'flac'   # Open-source lossless
@@ -187,10 +197,14 @@ def select_streams(info)
     audio_stream ||= info[:audio].first
     info[:audio] = audio_stream
   end
-
+  
   unless info[:subtitle].empty?
     # Removes all non-english subtitle streams.
     info[:subtitle].delete_if { |s| s[:language] != 'eng' }
+
+    # Removes DVD subtitles (vobsub) because they're images, not text, and
+    # ffmpeg doesn't have OCR capability.
+    info[:subtitle].delete_if { |s| s[:codec] == 'dvd_subtitle' }
 
     # Default to the last subtitle stream (first one is usually forced subs)
     info[:subtitle] = info[:subtitle].last
@@ -200,16 +214,16 @@ def select_streams(info)
 end
 
 #
-# Uses ffmpeg to convert the file to M4V format.
+# Uses ffmpeg to convert the file to MP4 format.
 #
 def convert(file_info)
   input_name = Shellwords.escape(file_info[:filename])
   input_suffix = File.extname input_name
   output_name = File.basename input_name, input_suffix
-  output_suffix = "m4v"
+  output_suffix = "mp4"
   command = [ "ffmpeg", "-y", "-i #{input_name}", "-map_chapters -1" ]
 
-  if (file_info[:video].empty? && !file_info[:audio].empty?) || input_suffix == '.flac' || input_suffix == '.mp3'
+  if (file_info[:video].empty? && !file_info[:audio].empty?) || input_suffix == '.flac' || input_suffix == '.mp3' || input_suffix == '.aiff'
     #
     # Audio-only files are converted to either ALAC if the source was FLAC, or
     # AAC for all other formats.
@@ -218,6 +232,8 @@ def convert(file_info)
     when "alac"
       command << "-map 0:a:#{file_info[:audio][:index]}" << "-codec:a copy"
     when "flac"
+      command << "-map 0:a:#{file_info[:audio][:index]}" << "-codec:a alac"
+    when "mp3"
       command << "-map 0:a:#{file_info[:audio][:index]}" << "-codec:a alac"
     else
       command << "-map 0:a:#{file_info[:audio][:index]}" << "-codec:a aac" << "-ar:a:0 48k" << "-ab:a 256k"
@@ -243,7 +259,8 @@ def convert(file_info)
       command << "-codec:v copy"
     else
       # This converts the video using settings suitable for a BluRay disc.
-      command << "-codec:v libx264" << "-preset:v slow" << "-profile:v main" << "-crf:v 18" << "-threads:v 0"
+      output_suffix = "mp4"
+      command << "-codec:v libx265" << "-vtag hvc1" << "-preset:v slow" << "-profile:v main" << "-crf:v 18" << "-threads:v 0"
 
       # Converts HD video to wide-screen 720P if necessary.
       command << "-vf:v scale=1280:-1" if Options.options[:P720]
@@ -289,7 +306,7 @@ def convert(file_info)
 
     end
 
-    unless file_info.key?(:subtitle) || file_info[:subtitle].empty?
+    if file_info.key?(:subtitle) && !file_info[:subtitle].empty?
       maps << "-map 0:s:#{file_info[:subtitle][:index]}"
       langs << "-metadata:s:#{langs.count} language=eng"
       command << "-codec:s:0 mov_text"
