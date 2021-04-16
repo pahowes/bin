@@ -244,7 +244,7 @@ def convert(file_info)
     # channels, so the information is collected here and inserted into the
     # command later.
     maps  = [ "-map 0:v:0" ]
-    langs = [ "-metadata:s:0 language=eng" ]
+    langs = [ "-metadata:s:v:0 language=und", "-metadata:s:v:0 title='Video Track'"]
 
     #
     # The video track is copied if the codec is h265 (hevc) and a video tag
@@ -272,7 +272,7 @@ def convert(file_info)
     if 2 >= file_info[:audio][:channels]
       # Only one audio map is needed
       maps  << "-map 0:a:#{file_info[:audio][:index]}"
-      langs << "-metadata:s:#{langs.count} language=eng"
+      langs << "-metadata:s:a:0 language=eng" << "-disposition:a:0 default"
 
       #
       # Stereo audio is copied if it's already AAC or converted.
@@ -286,7 +286,7 @@ def convert(file_info)
     else
       # Two audio maps are needed.
       maps  << "-map 0:a:#{file_info[:audio][:index]}" << "-map 0:a:#{file_info[:audio][:index]}"
-      langs << "-metadata:s:#{langs.count} language=eng" << "-metadata:s:#{langs.count} language=eng"
+      langs << "-metadata:s:a:0 language=eng" << "-metadata:s:a:0 title='Stereo Track'" << "-metadata:s:a:1 language=eng" << "-metadata:s:a:1 title='Surround Track'" << "-disposition:a:0 default" << "-disposition:a:1 none"
 
       #
       # Multi-track audio is first converted to a stereo AAC track to keep
@@ -308,7 +308,7 @@ def convert(file_info)
 
     if file_info.key?(:subtitle) && !file_info[:subtitle].empty?
       maps << "-map 0:s:#{file_info[:subtitle][:index]}"
-      langs << "-metadata:s:#{langs.count} language=eng"
+      langs << "-metadata:s:s:0 language=eng" << "-metadata:s:s:0 title='Subtitle Track'"
       command << "-codec:s:0 mov_text"
     end
 
