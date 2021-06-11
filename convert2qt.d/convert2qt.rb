@@ -204,7 +204,10 @@ def select_streams(info)
 
     # Removes DVD subtitles (vobsub) because they're images, not text, and
     # ffmpeg doesn't have OCR capability.
-    info[:subtitle].delete_if { |s| s[:codec] == 'dvd_subtitle' }
+    #info[:subtitle].delete_if { |s| s[:codec] == 'dvd_subtitle' }
+
+    # Removes Bluray PGS subtitles because ffmpeg doesn't have encoding nor OCR support.
+    info[:subtitle].delete_if { |s| s[:codec] == 'pdmv_pgs_subtitle' }
 
     # Default to the last subtitle stream (first one is usually forced subs)
     info[:subtitle] = info[:subtitle].last
@@ -272,7 +275,7 @@ def convert(file_info)
     if 2 >= file_info[:audio][:channels]
       # Only one audio map is needed
       maps  << "-map 0:a:#{file_info[:audio][:index]}"
-      langs << "-metadata:s:a:0 language=eng" << "-disposition:a:0 default"
+      langs << "-disposition:a:0 default"
 
       #
       # Stereo audio is copied if it's already AAC or converted.
@@ -286,7 +289,7 @@ def convert(file_info)
     else
       # Two audio maps are needed.
       maps  << "-map 0:a:#{file_info[:audio][:index]}" << "-map 0:a:#{file_info[:audio][:index]}"
-      langs << "-metadata:s:a:0 language=eng" << "-metadata:s:a:0 title='Stereo Track'" << "-metadata:s:a:1 language=eng" << "-metadata:s:a:1 title='Surround Track'" << "-disposition:a:0 default" << "-disposition:a:1 none"
+      langs << "-metadata:s:a:0 title='Stereo Track'" << "-metadata:s:a:1 title='Surround Track'" << "-disposition:a:0 default" << "-disposition:a:1 none"
 
       #
       # Multi-track audio is first converted to a stereo AAC track to keep
@@ -298,7 +301,7 @@ def convert(file_info)
       # DCA (DTS) is usually too quiet when converted to AAC.
       command << "-af:a:0 volume=2.0" if 'dca' == file_info[:audio][:codec]
 
-      if 'ac3' == file_info[:audio][:codec]
+      if 'ac3' == file_info[:audio][:codec] || 'eac3' == file_info[:audio][:codec]
         command << "-codec:a:1 copy"
       else
         command << "-codec:a:1 ac3" << "-ar:a:1 48k" << "-ab:a:1 448k" << "-ac:a:1 6"
@@ -309,7 +312,7 @@ def convert(file_info)
     if file_info.key?(:subtitle) && !file_info[:subtitle].empty?
       maps << "-map 0:s:#{file_info[:subtitle][:index]}"
       langs << "-metadata:s:s:0 language=eng" << "-metadata:s:s:0 title='Subtitle Track'"
-      command << "-codec:s:0 mov_text"
+      command << ('dvd_subtitle' == file_info[:subtitle][:codec] ? "-codec:s:0 copy" : "-codec:s:0 mov_text")
     end
 
     # Now insert the maps into the command
