@@ -144,19 +144,21 @@ def probe(file)
         :index    => info[:audio].count,
         :codec    => stream["codec_name"],
         :channels => stream["channels"],
-        :language => stream["tags"] ?
-                       (stream["tags"]["language"] && stream["tags"]["language"].downcase != 'und') ?
-                         stream["tags"]["language"].downcase :
-                         'eng' :
-                       'eng',
-        :title    => stream["tags"] ? stream["tags"]["title"] ? stream["tags"]["title"] : nil : nil
+        :language => (stream["tags"] && stream["tags"]["language"]) ? stream["tags"]["language"].downcase : 'und',
+        #:language => stream["tags"] ?
+        #               (stream["tags"]["language"] && stream["tags"]["language"].downcase != 'und') ?
+        #                 stream["tags"]["language"].downcase :
+        #                 'eng' :
+        #               'eng',
+        #:title    => stream["tags"] ? stream["tags"]["title"] ? stream["tags"]["title"] : nil : nil
+        :title    => (stream["tags"] && stream["tags"]["title"]) ? stream["tags"]["title"] : 'Audio Track'
       }
     elsif("subtitle" == stream["codec_type"] && Options.options[:subs])
       info[:subtitle] << {
         :index    => info[:subtitle].count,
         :codec    => stream["codec_name"],
         :language => stream["tags"] ? stream["tags"]["language"] ? stream["tags"]["language"].downcase : 'eng' : 'eng',
-        :title    => stream["tags"] ? stream["tags"]["title"] ? stream["tags"]["title"] : nil : nil,
+        :title    => (stream["tags"] && stream["tags"]["title"]) ? stream["tags"]["title"] : 'Subtitle Track',
         :forced   => stream["disposition"]["forced"],
         :impared  => stream["disposition"]["hearing_impaired"]
       }
@@ -170,50 +172,141 @@ end
 # Selects appropriate streams from those found in the file.
 #
 def select_streams(info)
-  if !info[:video].empty?
+  unless info[:video].empty?
     # There can be only one (video stream).
     info[:video] = info[:video].first
   end
 
   unless info[:audio].empty?
-    # Finds the highest quality audio stream available
+    audio_streams = []
     audio_stream = nil
+
+    # Finds the highest quality English audio stream available
     info[:audio].each do |s|
       if s[:language] == 'eng'
         # Surround tracks
         audio_stream ||= s if s[:codec] == 'dts'    # DTS
         audio_stream ||= s if s[:codec] == 'dca'    # DTS (older ffmpeg)
-        audio_stream ||= s if s[:codec] == 'ac3'    # Dolby Digital
         audio_stream ||= s if s[:codec] == 'eac3'   # Dolby Digital Plus
+        audio_stream ||= s if s[:codec] == 'ac3'    # Dolby Digital
         # Stereo tracks
         audio_stream ||= s if s[:codec] == 'alac'   # Apple lossless
         audio_stream ||= s if s[:codec] == 'flac'   # Open-source lossless
+        audio_stream ||= s if s[:codec] == 'opus'   # Open-source lossy
         audio_stream ||= s if s[:codec] == 'aac'    # AAC
+        audio_stream ||= s if s[:codec] == 'vorbis' # OGG Vorbis
         audio_stream ||= s if s[:codec] == 'mp3'    # MP3
       end
     end
 
-    # Catch-all, just in case.
-    audio_stream ||= info[:audio].first
-    info[:audio] = audio_stream
+    audio_streams << audio_stream if audio_stream != nil
+
+    # Adds all of the non-English audio streams.
+    info[:audio].each do |s|
+      if s[:language] != 'eng'
+        audio_streams << s
+      end
+    end
+
+    info[:audio] = audio_streams
   end
   
   unless info[:subtitle].empty?
     # Removes all non-english subtitle streams.
     info[:subtitle].delete_if { |s| s[:language] != 'eng' }
 
-    # Removes DVD subtitles (vobsub) because they're images, not text, and
-    # ffmpeg doesn't have OCR capability.
-    #info[:subtitle].delete_if { |s| s[:codec] == 'dvd_subtitle' }
-
     # Removes Bluray PGS subtitles because ffmpeg doesn't have encoding nor OCR support.
     info[:subtitle].delete_if { |s| s[:codec] == 'pdmv_pgs_subtitle' }
+
+    # Removes subtitles marked as "signs and songs" which are usually forced.
+    info[:subtitle].delete_if { |s| s[:title].downcase.include? 'sign' }
 
     # Default to the last subtitle stream (first one is usually forced subs)
     info[:subtitle] = info[:subtitle].last
   end
 
   return info
+end
+
+#
+# Converts an audio stream to AAC stereo
+#
+def convert_audio_to_aac(stream, index)
+  disposition = (index == 0) ? 'default' : 'none'
+  return [ "-map 0:a:#{stream[:index]}",
+           "-metadata:s:a:#{index} title='Stereo Track'",
+           "-metadata:s:a:#{index} language=#{stream[:language]}",
+           "-disposition:a:#{index} #{disposition}",
+           "-codec:a:#{index} aac",
+           "-ar:a:#{index} 48k",
+           "-ab:a:#{index} 160k",
+           "-ac:a:#{index} 2" ]
+end
+
+#
+# Converts an audio stream to AC3 5.1 Surround
+#
+def convert_audio_to_ac3(stream, index)
+  args = [ "-map 0:a:#{stream[:index]}",
+           "-metadata:s:a:#{index} title='Surround Track'",
+           "-metadata:s:a:#{index} language=#{stream[:language]}",
+           "-disposition:a:#{index} none",
+           "-codec:a:#{index} ac3",
+           "-ar:a:#{index} 48k",
+           "-ab:a:#{index} 448k",
+           "-ac:a:#{index} 6" ]
+
+    # DCA (DTS) is usually too quiet when converted to AAC.
+    args << "-af:a:#{index} volume=2.0" if 'dca' == stream[:codec]
+
+    return args
+end
+
+#
+# Copies an audio stream since it's already in an acceptable format
+#
+def copy_audio(stream, index)
+  disposition = (index == 0) ? 'default' : 'none'
+  title = (stream[:channels] > 2) ? 'Surround Track' : 'Stereo Track'
+  return [ "-map 0:a:#{stream[:index]}",
+           "-metadata:s:a:#{index} title='#{title}'",
+           "-metadata:s:a:#{index} language=#{stream[:language]}",
+           "-disposition:a:#{index} #{disposition}",
+           "-codec:a:#{index} copy" ]
+end
+
+#
+# Returns the parameters needed to convert an audio stream.
+# 
+def convert_audio(stream, index)
+  args = []
+
+  # If this is the first audio stream in an MP4 video file, and it contains more than two channels, a stereo AAC
+  # version of the stream is needed to satisfy strict MP4 clients, like QuickTime. Then the original multi-channel
+  # stream can be added, below.
+  if index == 0 && stream[:channels] > 2
+    args << convert_audio_to_aac(stream, index)
+    index = 1
+  end
+
+  if stream[:channels] > 2
+    # Ensure that multi-channel audio is in AC3 format.
+    case stream[:codec]
+    when 'ac3', 'eac3'
+      args << copy_audio(stream, index)
+    else
+      args << convert_audio_to_ac3(stream, index)
+    end
+  else
+    # Ensure that stereo audio is in AAC format.
+    if stream[:codec] == 'aac'
+      args << copy_audio(stream, index)
+    else
+      args << convert_audio_to_aac(stream, index)
+    end
+  end
+
+  return (index + 1), args
 end
 
 #
@@ -231,18 +324,21 @@ def convert(file_info)
     # Audio-only files are converted to either ALAC if the source was FLAC, or
     # AAC for all other formats.
     #
-    case file_info[:audio][:codec]
+    stream = file_info[:audio][0]
+    case stream[:codec]
     when "alac"
-      command << "-map 0:a:#{file_info[:audio][:index]}" << "-codec:a copy"
+      command << "-map 0:a:#{stream[:index]}" << "-codec:a copy"
     when "flac"
-      command << "-map 0:a:#{file_info[:audio][:index]}" << "-codec:a alac"
+      command << "-map 0:a:#{stream[:index]}" << "-codec:a alac"
     when "mp3"
-      command << "-map 0:a:#{file_info[:audio][:index]}" << "-codec:a alac"
+      command << "-map 0:a:#{stream[:index]}" << "-codec:a alac"
     else
-      command << "-map 0:a:#{file_info[:audio][:index]}" << "-codec:a aac" << "-ar:a:0 48k" << "-ab:a 256k"
+      command << "-map 0:a:#{stream[:index]}" << "-codec:a aac" << "-ar:a:0 48k" << "-ab:a 256k"
     end
     output_suffix = "m4a"
   elsif !file_info[:video].empty? && !file_info[:audio].empty?
+    command << "-map_metadata -1"
+
     # The number of channel maps and languages depends on the number of audio
     # channels, so the information is collected here and inserted into the
     # command later.
@@ -272,46 +368,15 @@ def convert(file_info)
       command << "-vf:v scale=854:-1" if Options.options[:P480]
     end
 
-    if 2 >= file_info[:audio][:channels]
-      # Only one audio map is needed
-      maps  << "-map 0:a:#{file_info[:audio][:index]}"
-      langs << "-disposition:a:0 default"
-
-      #
-      # Stereo audio is copied if it's already AAC or converted.
-      #
-      command << "-codec:a:0"
-      if 'aac' == file_info[:audio][:codec]
-        command << "copy"
-      else
-        command << "aac" << "-ab:a:0 160k"
-      end
-    else
-      # Two audio maps are needed.
-      maps  << "-map 0:a:#{file_info[:audio][:index]}" << "-map 0:a:#{file_info[:audio][:index]}"
-      langs << "-metadata:s:a:0 title='Stereo Track'" << "-metadata:s:a:1 title='Surround Track'" << "-disposition:a:0 default" << "-disposition:a:1 none"
-
-      #
-      # Multi-track audio is first converted to a stereo AAC track to keep
-      # older Apple devices happy, then a six-channel AC3 track is added after
-      # it that contains the multi-track audio.
-      #
-      command << "-codec:a:0 aac" << "-ar:a:0 48k" << "-ab:a:0 160k" << "-ac:a:0 2"
-
-      # DCA (DTS) is usually too quiet when converted to AAC.
-      command << "-af:a:0 volume=2.0" if 'dca' == file_info[:audio][:codec]
-
-      if 'ac3' == file_info[:audio][:codec] || 'eac3' == file_info[:audio][:codec]
-        command << "-codec:a:1 copy"
-      else
-        command << "-codec:a:1 ac3" << "-ar:a:1 48k" << "-ab:a:1 448k" << "-ac:a:1 6"
-      end
-
+    # Convert all of the audio tracks to AAC (stereo) and AC3 (multi-channel)
+    index = 0
+    file_info[:audio].each do |stream|
+      index, c = convert_audio(stream, index)
+      command << c
     end
 
     if file_info.key?(:subtitle) && !file_info[:subtitle].empty?
-      maps << "-map 0:s:#{file_info[:subtitle][:index]}"
-      langs << "-metadata:s:s:0 language=eng" << "-metadata:s:s:0 title='Subtitle Track'"
+      command << "-map 0:s:#{file_info[:subtitle][:index]}" << "-metadata:s:s:0 language=eng" << "-metadata:s:s:0 title='Subtitle Track'"
       command << ('dvd_subtitle' == file_info[:subtitle][:codec] ? "-codec:s:0 copy" : "-codec:s:0 mov_text")
     end
 
