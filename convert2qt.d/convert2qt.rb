@@ -317,7 +317,7 @@ def convert(file_info)
   input_suffix = File.extname input_name
   output_name = File.basename input_name, input_suffix
   output_suffix = "mp4"
-  command = [ "ffmpeg", "-y", "-i #{input_name}", "-map_chapters -1" ]
+  command = [ "ffmpeg", "-y", "-i #{input_name}", "-max_muxing_queue_size 9999", "-map_chapters -1" ]
 
   if (file_info[:video].empty? && !file_info[:audio].empty?) || input_suffix == '.flac' || input_suffix == '.mp3' || input_suffix == '.aiff'
     #
@@ -375,7 +375,7 @@ def convert(file_info)
       command << c
     end
 
-    if file_info.key?(:subtitle) && !file_info[:subtitle].empty?
+    if file_info.key?(:subtitle) && !file_info[:subtitle].nil? && !file_info[:subtitle].empty?
       command << "-map 0:s:#{file_info[:subtitle][:index]}" << "-metadata:s:s:0 language=eng" << "-metadata:s:s:0 title='Subtitle Track'"
       command << ('dvd_subtitle' == file_info[:subtitle][:codec] ? "-codec:s:0 copy" : "-codec:s:0 mov_text")
     end
