@@ -145,12 +145,6 @@ def probe(file)
         :codec    => stream["codec_name"],
         :channels => stream["channels"],
         :language => (stream["tags"] && stream["tags"]["language"]) ? stream["tags"]["language"].downcase : 'und',
-        #:language => stream["tags"] ?
-        #               (stream["tags"]["language"] && stream["tags"]["language"].downcase != 'und') ?
-        #                 stream["tags"]["language"].downcase :
-        #                 'eng' :
-        #               'eng',
-        #:title    => stream["tags"] ? stream["tags"]["title"] ? stream["tags"]["title"] : nil : nil
         :title    => (stream["tags"] && stream["tags"]["title"]) ? stream["tags"]["title"] : 'Audio Track'
       }
     elsif("subtitle" == stream["codec_type"] && Options.options[:subs])
@@ -216,7 +210,7 @@ def select_streams(info)
     info[:subtitle].delete_if { |s| s[:language] != 'eng' }
 
     # Removes Bluray PGS subtitles because ffmpeg doesn't have encoding nor OCR support.
-    info[:subtitle].delete_if { |s| s[:codec] == 'pdmv_pgs_subtitle' }
+    info[:subtitle].delete_if { |s| s[:codec] == 'hdmv_pgs_subtitle' }
 
     # Removes subtitles marked as "signs and songs" which are usually forced.
     info[:subtitle].delete_if { |s| s[:title].downcase.include? 'sign' }
