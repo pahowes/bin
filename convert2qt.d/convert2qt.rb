@@ -210,7 +210,7 @@ def select_streams(info)
     info[:subtitle].delete_if { |s| s[:title].downcase.include? 'sign' }
 
     # Default to the last subtitle stream (first one is usually forced subs)
-    info[:subtitle] = info[:subtitle].last
+    info[:subtitle] = info[:subtitle].last unless info[:subtitle].empty?
   end
 
   return info
