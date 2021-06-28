@@ -29,9 +29,6 @@ class Options
     # Whether to dump the output from ffprobe and exit.
     :info => false,
 
-    # Whether to include subtitles from the source file.
-    :subs => false,
-
     # Files to convert.
     :files => []
   }
@@ -58,9 +55,6 @@ class Options
       end
       opts.on("-i", "--info", "Dump ffprobe output and exit") do |i|
         @@options[:info] = i
-      end
-      opts.on("-s", "--subtitles", "Convert subtitles from the source file") do |s|
-        @@options[:subs] = s
       end
       opts.on_tail("-v", "--version", "Show version") do
         puts opts.ver()
@@ -147,7 +141,7 @@ def probe(file)
         :language => (stream["tags"] && stream["tags"]["language"]) ? stream["tags"]["language"].downcase : 'und',
         :title    => (stream["tags"] && stream["tags"]["title"]) ? stream["tags"]["title"] : 'Audio Track'
       }
-    elsif("subtitle" == stream["codec_type"] && Options.options[:subs])
+    elsif("subtitle" == stream["codec_type"])
       info[:subtitle] << {
         :index    => info[:subtitle].count,
         :codec    => stream["codec_name"],
