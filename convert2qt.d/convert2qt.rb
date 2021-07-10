@@ -325,13 +325,11 @@ def convert(file_info)
     end
     output_suffix = "m4a"
   elsif !file_info[:video].empty? && !file_info[:audio].empty?
+    # Removes all of the default metadata that junks up the final file.
     command << "-map_metadata -1"
-
-    # The number of channel maps and languages depends on the number of audio
-    # channels, so the information is collected here and inserted into the
-    # command later.
-    maps  = [ "-map 0:v:0" ]
-    langs = [ "-metadata:s:v:0 language=und", "-metadata:s:v:0 title='Video Track'"]
+    
+    # Maps the video track
+    command << "-map 0:v:0" << "-metadata:s:v:0 language=und" << "-metadata:s:v:0 title='Video Track'"
 
     #
     # The video track is copied if the codec is h265 (hevc) and a video tag
@@ -371,8 +369,6 @@ def convert(file_info)
       command << ('dvd_subtitle' == file_info[:subtitle][:codec] ? "-codec:s:0 copy" : "-codec:s:0 mov_text")
     end
 
-    # Now insert the maps into the command
-    command.insert 4, maps.concat(langs)
   end
 
   command << "#{output_name}.#{output_suffix}"
