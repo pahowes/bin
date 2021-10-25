@@ -346,9 +346,7 @@ def convert(file_info)
       # This converts the video using settings that provide nearly visual
       # lossless results.
       output_suffix = "mp4"
-      command << "-codec:v libx265" << "-vtag hvc1" << "-preset:v slow"
-      command << (file_info[:video][:width] > 1000 ? '-profile:v high' : '-profile:v main')
-      command << "-crf:v 18" << "-threads:v 0"
+      command << "-codec:v libx265" << "-vtag hvc1" << "-preset:v slow" << "-profile:v main" << "-crf:v 18" << "-threads:v 0"
 
       # Converts HD video to wide-screen 720P if necessary.
       command << "-vf:v scale=1280:-1" if Options.options[:P720]
